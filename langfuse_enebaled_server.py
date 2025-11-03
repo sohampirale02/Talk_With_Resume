@@ -1,4 +1,5 @@
 import os
+import random
 import PyPDF2
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,7 +7,6 @@ from pydantic import BaseModel
 from typing import List
 import shutil
 from pathlib import Path
-from langfuse_enebaled_server import Langfuse
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, START, END
@@ -16,7 +16,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 
+from langfuse import get_client,observe,propagate_attributes
+# from langfuse.propagation import propagate_attributes
+# from langfuse._client.propagation import propagate_attributes
+from langfuse.langchain import CallbackHandler
+
 load_dotenv()
+print(f'GEMINI_API_KEY :{os.getenv("GEMINI_API_KEY")}')
+langfuse = get_client()
 
 
 app = FastAPI()
@@ -57,6 +64,7 @@ llm = ChatGoogleGenerativeAI(
     api_key=os.getenv('GEMINI_API_KEY')
 ).bind_tools([read_pdf])
 
+@observe(name='agent_node')
 def agent_node(state: AgentState) -> AgentState:
     """Agent node which talks back and forth with HR and helps HR talk with the Resume"""
     print('inside agent_node')
@@ -101,7 +109,7 @@ graph.add_conditional_edges(
 agent_app = graph.compile(checkpointer=memory)
 
 THREAD_ID = "user_session_1"
-config = {"configurable": {"thread_id": THREAD_ID}}
+
 
 class ChatMessage(BaseModel):
     message: str
@@ -130,6 +138,7 @@ async def list_resumes():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@observe(name="upload_resume")
 @app.post("/resume")
 async def upload_resume(file: UploadFile = File(...)):
     """Upload a resume (PDF file)"""
@@ -149,25 +158,32 @@ async def upload_resume(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+session_id='fixed_5'
+
+@observe(name="chat_endpoint")                     
 @app.post("/chat", response_model=ChatResponse)
 async def chat(chat_message: ChatMessage):
     """Chat endpoint that processes messages through the LangGraph agent"""
     try:
         user_message = chat_message.message
-        
+        langfuse_handler=CallbackHandler()
+        config = {
+            "configurable": {"thread_id": THREAD_ID},
+            "callbacks":[langfuse_handler]
+        }
         messages = [HumanMessage(content=user_message)]
         initial_state = AgentState(messages=messages)
-        
-        response = agent_app.invoke(initial_state, config=config)
-        
-        last_message = response['messages'][-1]
-        
-        if isinstance(last_message, AIMessage):
-            ai_response = last_message.content
-        else:
-            ai_response = "No response from agent"
-        
-        return ChatResponse(response=ai_response)
+        with propagate_attributes(session_id=session_id):
+            response = agent_app.invoke(initial_state, config=config)
+    
+            last_message = response['messages'][-1]
+            
+            if isinstance(last_message, AIMessage):
+                ai_response = last_message.content
+            else:
+                ai_response = "No response from agent"
+            
+            return ChatResponse(response=ai_response)
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

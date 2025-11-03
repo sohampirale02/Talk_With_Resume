@@ -1,1 +1,1 @@
-pip install fastapi pydantic typing  pathlib langchain_core langgraph langchain_google_genai dotenv PyPDF2 python-multipart uvicorn
+pip install fastapi pydantic typing  pathlib langchain_core langgraph langchain_google_genai dotenv PyPDF2 python-multipart uvicorn langfuse
